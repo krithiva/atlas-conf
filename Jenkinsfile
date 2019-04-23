@@ -1,10 +1,10 @@
 pipeline {
   agent {
-    label "jenkins-maven"
+    label "jenkins-ruby"
   }
   environment {
     ORG = 'krithiva'
-    APP_NAME = 'docker-image-atlassian-confluence'
+    APP_NAME = 'atlas-conf'
     CHARTMUSEUM_CREDS = credentials('jenkins-x-chartmuseum')
   }
   stages {
@@ -18,9 +18,14 @@ pipeline {
         HELM_RELEASE = "$PREVIEW_NAMESPACE".toLowerCase()
       }
       steps {
-        container('maven') {
-          sh "skaffold version"
-          sh "export VERSION=$PREVIEW_VERSION && skaffold build -f skaffold.yaml"
+        container('ruby') {
+          sh "docker build -t $DOCKER_REGISTRY/$ORG/$APP_NAME:$PREVIEW_VERSION ."
+          sh "docker push $DOCKER_REGISTRY/$ORG/$APP_NAME:$PREVIEW_VERSION"
+          sh "jx step post build --image $DOCKER_REGISTRY/$ORG/$APP_NAME:$PREVIEW_VERSION"
+          dir('./charts/preview') {
+            sh "make preview"
+            sh "jx preview --app $APP_NAME --dir ../.."
+          }
         }
       }
     }
@@ -29,14 +34,16 @@ pipeline {
         branch 'master'
       }
       steps {
-        container('maven') {
+        container('ruby') {
 
           // ensure we're not on a detached head
           sh "git checkout master"
           sh "git config --global credential.helper store"
           sh "jx step git credentials"
           sh "jx step next-version --use-git-tag-only --tag"
-          sh "export VERSION=`cat VERSION` && skaffold build -f skaffold.yaml"
+          sh "docker build -t $DOCKER_REGISTRY/$ORG/$APP_NAME:\$(cat VERSION) ."
+          sh "docker push $DOCKER_REGISTRY/$ORG/$APP_NAME:\$(cat VERSION)"
+          sh "jx step post build --image $DOCKER_REGISTRY/$ORG/$APP_NAME:\$(cat VERSION)"
         }
       }
     }
@@ -45,8 +52,16 @@ pipeline {
         branch 'master'
       }
       steps {
-        container('maven') {
-          sh "jx step changelog --version v\$(cat VERSION)"
+        container('ruby') {
+          dir('./charts/atlas-conf') {
+            sh "jx step changelog --version v\$(cat ../../VERSION)"
+
+            // release the helm chart
+            sh "jx step helm release"
+
+            // promote through all 'Auto' promotion Environments
+            sh "jx promote -b --all-auto --timeout 1h --version \$(cat ../../VERSION)"
+          }
         }
       }
     }
